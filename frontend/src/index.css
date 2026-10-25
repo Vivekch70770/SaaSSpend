@@ -1,0 +1,4 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+@theme { --font-sans: Inter, system-ui, sans-serif; }
+body { @apply bg-stone-50 text-stone-900 antialiased dark:bg-stone-950 dark:text-stone-50; font-feature-settings: "cv11", "tnum"; letter-spacing: -0.006em; }

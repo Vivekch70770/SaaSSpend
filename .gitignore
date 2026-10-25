@@ -1,0 +1,23 @@
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+
+# Local secrets
+*.pem
+*.key
+
+# Editor and OS
+.vscode/
+.DS_Store
+Thumbs.db
