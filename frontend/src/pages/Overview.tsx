@@ -22,7 +22,7 @@ import {
   YAxis,
 } from "recharts";
 import { requestApi, useApi } from "../lib/api";
-import { inr, lakh } from "../lib/format";
+import { formatDate, inr, lakh } from "../lib/format";
 import { Card, Loading, Page } from "../ui";
 
 type OverviewData = {
@@ -32,7 +32,7 @@ type OverviewData = {
     savings: number;
     apps: number;
     renewals: number;
-    next_renewal_days: number;
+    next_renewal_days: number | null;
   };
   history: { month: string; lakh: number }[];
   breakdown: { name: string; lakh: number }[];
@@ -43,7 +43,15 @@ type LicenseData = {
   summary: { purchased: number; assigned: number; unused: number; utilization: number };
 };
 type RenewalData = {
-  items: { name: string; renewal_date: string; days_remaining: number; annual_cost: number; urgency: string }[];
+  items: {
+    name: string;
+    renewal_date: string | null;
+    days_remaining: number | null;
+    annual_cost: number;
+    urgency: string;
+    renewal_status: string;
+    status: string;
+  }[];
 };
 
 const rangeOptions = ["6M", "12M"] as const;
@@ -74,7 +82,6 @@ export default function Overview() {
   const { data: licenses, error: licensesError, reload: reloadLicenses } = useApi<LicenseData>("/licenses");
   const { data: renewals, error: renewalsError, reload: reloadRenewals } = useApi<RenewalData>("/renewals");
   const [range, setRange] = useState<(typeof rangeOptions)[number]>("12M");
-  const [reviewed, setReviewed] = useState<string[]>([]);
   const [reviewing, setReviewing] = useState<string | null>(null);
   const [reviewError, setReviewError] = useState("");
   const navigate = useNavigate();
@@ -90,7 +97,9 @@ export default function Overview() {
     [data],
   );
   const upcoming = useMemo(
-    () => [...(renewals?.items ?? [])].sort((a, b) => a.days_remaining - b.days_remaining).slice(0, 4),
+    () => [...(renewals?.items ?? [])]
+      .sort((a, b) => (a.days_remaining ?? Number.MAX_SAFE_INTEGER) - (b.days_remaining ?? Number.MAX_SAFE_INTEGER))
+      .slice(0, 4),
     [renewals],
   );
 
@@ -110,7 +119,6 @@ export default function Overview() {
     setReviewError("");
     try {
       await requestApi(`/renewals/${encodeURIComponent(name)}/review`, { method: "POST" });
-      setReviewed((current) => [...current, name]);
       reloadRenewals();
     } catch (failure) {
       setReviewError(failure instanceof Error ? failure.message : "Could not review this renewal.");
@@ -271,7 +279,7 @@ export default function Overview() {
             <CalendarDays size={16} className="text-stone-500" />
           </div>
           <p className="mt-3 text-3xl font-semibold tracking-tight text-stone-100">{k.renewals}</p>
-          <p className="mt-2 text-xs text-stone-500">Next in {k.next_renewal_days} days</p>
+          <p className="mt-2 text-xs text-stone-500">{k.next_renewal_days === null ? "No scheduled renewals" : k.next_renewal_days === 0 ? "Due today" : k.next_renewal_days < 0 ? `${Math.abs(k.next_renewal_days)} days overdue` : `Next in ${k.next_renewal_days} days`}</p>
         </Card>
 
         <Card className="col-span-12 lg:col-span-7">
@@ -377,9 +385,8 @@ export default function Overview() {
             {reviewError && <p role="alert" className="mt-4 rounded-lg border border-rose-400/15 bg-rose-400/[.05] px-3 py-2 text-xs text-rose-200">{reviewError}</p>}
             <div className="mt-4 divide-y divide-white/[.055]">
               {upcoming.map((item) => {
-                const done = reviewed.includes(item.name);
+                const done = item.status === "Reviewed";
                 const isReviewing = reviewing === item.name;
-                const date = new Date(`${item.renewal_date}T00:00:00`);
                 return (
                   <div key={item.name} className="flex flex-wrap items-center gap-3 py-3.5">
                     <div className="grid size-9 shrink-0 place-items-center rounded-xl border border-white/[.07] bg-white/[.035] text-xs font-semibold text-stone-300">
@@ -388,8 +395,13 @@ export default function Overview() {
                     <div className="min-w-[120px] flex-1">
                       <p className="text-sm font-medium text-stone-200">{item.name}</p>
                       <p className="mt-0.5 text-[11px] text-stone-500">
-                        {date.toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
-                        {" · "}{item.days_remaining} days
+                        {item.renewal_date ? formatDate(item.renewal_date) : "Date unavailable"}
+                        {" · "}{item.days_remaining === null
+                          ? "Days unavailable"
+                          : item.days_remaining < 0
+                            ? `${Math.abs(item.days_remaining)} days overdue`
+                            : item.days_remaining === 0 ? "Today" : `In ${item.days_remaining} days`}
+                        {" · "}{item.renewal_status}
                       </p>
                     </div>
                     <div className="text-right">

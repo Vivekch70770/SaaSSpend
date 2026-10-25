@@ -89,9 +89,9 @@ export default function Reports() {
           </p>
         </Card>
         <Card className="stat-card">
-          <p className="text-xs text-stone-500">Savings identified</p>
+          <p className="text-xs text-stone-500">Estimated potential savings</p>
           <p className="mt-3 text-2xl font-semibold tracking-tight text-[#d5f891]">{lakh(data.kpis.savings)}</p>
-          <p className="mt-2 text-xs text-stone-500">Potential, per month</p>
+          <p className="mt-2 text-xs text-stone-500">Per month · not realized</p>
         </Card>
         <Card className="stat-card">
           <p className="text-xs text-stone-500">Applications tracked</p>

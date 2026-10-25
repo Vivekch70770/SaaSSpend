@@ -11,12 +11,21 @@ export async function requestApi<T>(path: string, init?: RequestInit): Promise<T
   if (!response.ok) {
     let message = `API error: ${response.status}`;
     try {
-      const body = (await response.json()) as { detail?: string };
-      if (body.detail) message = body.detail;
+      const body = (await response.json()) as {
+        detail?: string | { msg?: string }[];
+      };
+      if (typeof body.detail === "string") {
+        message = body.detail;
+      } else if (body.detail?.length) {
+        message = body.detail.map((issue) => issue.msg ?? "Invalid value").join("; ");
+      }
     } catch {
       // Keep the HTTP status message when the server response is not JSON.
     }
     throw new Error(message);
+  }
+  if (response.status === 204 || response.status === 205) {
+    return undefined as T;
   }
   return response.json() as Promise<T>;
 }
@@ -35,16 +44,21 @@ export type App = {
   savings: number;
 };
 
+export type AppInput = Pick<App, "name" | "category" | "cost" | "licenses" | "active" | "risk" | "renewal">;
+
 export type Opp = {
   type: string;
   app: string;
   monthly: number;
+  estimated_monthly_savings: number;
   annual: number;
   confidence: string;
   why: string;
   utilization: number;
   active: number;
   licenses: number;
+  unused: number;
+  seat_cost: number;
 };
 
 export function useApi<T>(path: string) {

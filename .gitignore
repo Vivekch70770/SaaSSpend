@@ -8,6 +8,7 @@ venv/
 .env.*
 !.env.example
 .pytest_cache/
+/backend/saasspend.db
 
 # Node
 node_modules/

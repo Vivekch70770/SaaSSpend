@@ -1,4 +1,8 @@
 """Data layer. Replace MockProvider with real API-backed providers later."""
+import sqlite3
+from contextlib import closing
+from datetime import date, datetime
+from pathlib import Path
 from typing import Protocol
 
 _APPS = [  # name, category, monthly cost (INR), licenses, active, risk, renewal, annual contract
@@ -11,16 +15,17 @@ _APPS = [  # name, category, monthly cost (INR), licenses, active, risk, renewal
     ("Notion", "Productivity", 210000, 120, 72, "Low", "Jan 08", 2520000),
     ("Jira", "Development", 160000, 90, 71, "Low", "Jan 22", 1920000),
 ]
-_KEYS = ("name", "category", "cost", "licenses", "active", "risk", "renewal", "annual")
+DEFAULT_DATABASE_PATH = Path(__file__).resolve().parent / "saasspend.db"
 
 class Provider(Protocol):
     def apps(self) -> list[dict]: ...
     def spend_history(self) -> list[dict]: ...
 
 class MockProvider:
-    def __init__(self) -> None:
-        self._apps = list(_APPS)
-        self._renewal_reviews: set[str] = set()
+    def __init__(self, database_path: str | Path = DEFAULT_DATABASE_PATH) -> None:
+        self._database_path = Path(database_path)
+        self._database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._initialize_database()
         self._shadow_apps = [
             {"id": "linear", "name": "Linear", "category": "Project management", "monthly_cost": 68000,
              "risk": "Medium", "discovered": "2026-10-18", "owner": "Engineering", "status": "Pending review"},
@@ -67,8 +72,175 @@ class MockProvider:
              "status": "Open"},
         ]
 
+    def _initialize_database(self) -> None:
+        with closing(sqlite3.connect(self._database_path)) as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS applications (
+                    name TEXT PRIMARY KEY,
+                    category TEXT NOT NULL,
+                    cost INTEGER NOT NULL,
+                    licenses INTEGER NOT NULL,
+                    active INTEGER NOT NULL,
+                    risk TEXT NOT NULL,
+                    renewal TEXT NOT NULL,
+                    annual INTEGER NOT NULL
+                )
+                """
+            )
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(applications)").fetchall()
+            }
+            if "renewal_reviewed" not in columns:
+                connection.execute(
+                    "ALTER TABLE applications ADD COLUMN renewal_reviewed INTEGER NOT NULL DEFAULT 0"
+                )
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                count = connection.execute("SELECT COUNT(*) FROM applications").fetchone()[0]
+                if count == 0:
+                    connection.executemany(
+                        """
+                        INSERT INTO applications
+                            (name, category, cost, licenses, active, risk, renewal, annual)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (*app[:6], self._legacy_renewal_date(app[6]), app[7])
+                            for app in _APPS
+                        ],
+                    )
+                self._normalize_legacy_renewal_dates(connection)
+
+    @staticmethod
+    def _legacy_renewal_date(value: str) -> str:
+        today = date.today()
+        parsed = datetime.strptime(f"{value} 2000", "%b %d %Y")
+        year = today.year
+        while True:
+            try:
+                renewal_date = date(year, parsed.month, parsed.day)
+            except ValueError:
+                year += 1
+                continue
+            if renewal_date >= today:
+                return renewal_date.isoformat()
+            year += 1
+
+    @classmethod
+    def _normalize_legacy_renewal_dates(cls, connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            "SELECT name, renewal FROM applications WHERE renewal NOT GLOB '????-??-??'"
+        ).fetchall()
+        for name, renewal in rows:
+            try:
+                normalized = cls._legacy_renewal_date(renewal)
+            except (ValueError, IndexError):
+                continue
+            connection.execute(
+                "UPDATE applications SET renewal = ? WHERE name = ?",
+                (normalized, name),
+            )
+
     def apps(self) -> list[dict]:
-        return [dict(zip(_KEYS, app)) for app in self._apps]
+        with closing(sqlite3.connect(self._database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """
+                SELECT name, category, cost, licenses, active, risk, renewal, annual
+                FROM applications ORDER BY rowid
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def app(self, name: str) -> dict | None:
+        with closing(sqlite3.connect(self._database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                """
+                SELECT name, category, cost, licenses, active, risk, renewal, annual
+                FROM applications WHERE name = ? COLLATE NOCASE
+                """,
+                (name,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def create_app(self, app: dict) -> dict:
+        with closing(sqlite3.connect(self._database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                if connection.execute(
+                    "SELECT 1 FROM applications WHERE name = ? COLLATE NOCASE",
+                    (app["name"],),
+                ).fetchone():
+                    raise ValueError("An application with this name already exists")
+                connection.execute(
+                    """
+                    INSERT INTO applications
+                        (name, category, cost, licenses, active, risk, renewal, annual)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    tuple(app[key] for key in ("name", "category", "cost", "licenses", "active", "risk", "renewal", "annual")),
+                )
+                row = connection.execute(
+                    """
+                    SELECT name, category, cost, licenses, active, risk, renewal, annual
+                    FROM applications WHERE name = ?
+                    """,
+                    (app["name"],),
+                ).fetchone()
+        return dict(row)
+
+    def update_app(self, current_name: str, app: dict) -> dict | None:
+        with closing(sqlite3.connect(self._database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                existing = connection.execute(
+                    "SELECT name FROM applications WHERE name = ? COLLATE NOCASE",
+                    (current_name,),
+                ).fetchone()
+                if existing is None:
+                    return None
+                duplicate = connection.execute(
+                    """
+                    SELECT 1 FROM applications
+                    WHERE name = ? COLLATE NOCASE AND name != ? COLLATE NOCASE
+                    """,
+                    (app["name"], existing["name"]),
+                ).fetchone()
+                if duplicate:
+                    raise ValueError("An application with this name already exists")
+                connection.execute(
+                    """
+                    UPDATE applications
+                    SET name = ?, category = ?, cost = ?, licenses = ?, active = ?,
+                        risk = ?, renewal = ?, annual = ?
+                    WHERE name = ? COLLATE NOCASE
+                    """,
+                    (*(
+                        app[key]
+                        for key in ("name", "category", "cost", "licenses", "active", "risk", "renewal", "annual")
+                    ), existing["name"]),
+                )
+                row = connection.execute(
+                    """
+                    SELECT name, category, cost, licenses, active, risk, renewal, annual
+                    FROM applications WHERE name = ?
+                    """,
+                    (app["name"],),
+                ).fetchone()
+        return dict(row)
+
+    def delete_app(self, name: str) -> bool:
+        with closing(sqlite3.connect(self._database_path)) as connection:
+            with connection:
+                cursor = connection.execute(
+                    "DELETE FROM applications WHERE name = ? COLLATE NOCASE",
+                    (name,),
+                )
+        return cursor.rowcount > 0
 
     def spend_history(self) -> list[dict]:
         months = "Nov Dec Jan Feb Mar Apr May Jun Jul Aug Sep Oct".split()
@@ -76,26 +248,51 @@ class MockProvider:
         return [{"month": m, "lakh": v} for m, v in zip(months, vals)]
 
     def reclaim_license_seats(self, name: str) -> bool:
-        app = next((item for item in self._apps if item[0].lower() == name.lower()), None)
-        if app is None:
-            return False
-        name, category, cost, licenses, active, risk, renewal, _ = app
-        if licenses == active:
-            return False
-        seat_cost = cost / licenses
-        self._apps[self._apps.index(app)] = (
-            name, category, round(seat_cost * active), active, active, risk, renewal, round(seat_cost * active * 12)
-        )
+        with closing(sqlite3.connect(self._database_path)) as connection:
+            with connection:
+                app = connection.execute(
+                    """
+                    SELECT name, cost, licenses, active
+                    FROM applications
+                    WHERE name = ? COLLATE NOCASE
+                    """,
+                    (name,),
+                ).fetchone()
+                if app is None:
+                    return False
+                app_name, cost, licenses, active = app
+                if licenses == active:
+                    return False
+                seat_cost = cost / licenses
+                updated_cost = round(seat_cost * active)
+                connection.execute(
+                    """
+                    UPDATE applications
+                    SET cost = ?, licenses = ?, annual = ?
+                    WHERE name = ?
+                    """,
+                    (updated_cost, active, round(seat_cost * active * 12), app_name),
+                )
         return True
 
     def renewal_reviews(self) -> set[str]:
-        return set(self._renewal_reviews)
+        with closing(sqlite3.connect(self._database_path)) as connection:
+            rows = connection.execute(
+                "SELECT name FROM applications WHERE renewal_reviewed = 1"
+            ).fetchall()
+        return {row[0].lower() for row in rows}
 
     def review_renewal(self, name: str) -> bool:
-        if not any(app[0].lower() == name.lower() for app in self._apps):
-            return False
-        self._renewal_reviews.add(name.lower())
-        return True
+        with closing(sqlite3.connect(self._database_path)) as connection:
+            with connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE applications SET renewal_reviewed = 1
+                    WHERE name = ? COLLATE NOCASE
+                    """,
+                    (name,),
+                )
+        return cursor.rowcount > 0
 
     def shadow_apps(self) -> list[dict]:
         return [dict(app) for app in self._shadow_apps]

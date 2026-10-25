@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Badge, Card, Loading, Page } from "../ui";
 import { requestApi, useApi } from "../lib/api";
-import { inr } from "../lib/format";
+import { formatDate, inr } from "../lib/format";
 
 type License = {
   name: string;
@@ -19,16 +19,17 @@ type LicenseResponse = {
 type Renewal = {
   name: string;
   category: string;
-  renewal_date: string;
-  days_remaining: number;
+  renewal_date: string | null;
+  days_remaining: number | null;
   monthly_cost: number;
   annual_cost: number;
   risk: string;
-  urgency: "High" | "Medium" | "Low";
+  urgency: "Overdue" | "High" | "Medium" | "Low" | "Unknown";
+  renewal_status: "Overdue" | "Due soon" | "Upcoming" | "Unknown";
   status: string;
 };
 type RenewalResponse = {
-  summary: { upcoming: number; due_soon: number; annual_cost: number };
+  summary: { upcoming: number; due_soon: number; overdue: number; annual_cost: number };
   items: Renewal[];
 };
 type ShadowApp = {
@@ -265,20 +266,25 @@ export function RenewalsPage() {
   const { data, error, loading, reload } = useApi<RenewalResponse>("/renewals");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
-  const [sort, setSort] = useState("days_remaining");
+  const [sort, setSort] = useState("urgency");
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
   const [working, setWorking] = useState("");
   const [actionError, setActionError] = useState("");
   const rows = useMemo(() => {
     const filtered = (data?.items ?? []).filter((item) =>
       `${item.name} ${item.category}`.toLowerCase().includes(query.toLowerCase())
-      && (filter === "all" || (filter === "review" ? item.status === "Needs review" : item.urgency === filter)),
+      && (filter === "all"
+        || (filter === "review" ? item.status === "Needs review"
+          : filter === "upcoming" ? item.renewal_status === "Upcoming"
+            : filter === "due-soon" ? item.renewal_status === "Due soon"
+              : filter === "overdue" ? item.renewal_status === "Overdue"
+                : item.urgency === filter)),
     );
     return sortValue(filtered, (item) => {
-      if (sort === "date") return item.renewal_date;
+      if (sort === "date") return item.renewal_date ?? "9999-12-31";
       if (sort === "cost") return item.annual_cost;
-      if (sort === "urgency") return item.days_remaining;
-      return item.days_remaining;
+      if (sort === "name") return item.name;
+      return item.days_remaining ?? Number.MAX_SAFE_INTEGER;
     }, direction);
   }, [data, query, filter, sort, direction]);
   const onSort = (key: string) => changeSort(key, sort, direction, setSort, setDirection);
@@ -299,17 +305,18 @@ export function RenewalsPage() {
   if (!data) return <Page title="Renewals" sub="Upcoming contract dates, costs, and renewal priorities."><LoadState loading={loading} error={error} retry={reload} /></Page>;
   return (
     <Page title="Renewals" sub="Upcoming contract dates, costs, and renewal priorities.">
-      <div className="mb-4 grid gap-3 sm:grid-cols-3">
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Metric label="Upcoming renewals" value={String(data.summary.upcoming)} />
         <Metric label="Due in 30 days" value={String(data.summary.due_soon)} detail="Prioritize contracts that are approaching" />
+        <Metric label="Overdue renewals" value={String(data.summary.overdue)} detail="Past their stored renewal date" />
         <Metric label="Annual contract value" value={inr(data.summary.annual_cost)} />
       </div>
-      <PrototypeNote>Renewal dates and contract values are mock-provider estimates, not connected vendor billing or contract data.</PrototypeNote>
+      <PrototypeNote>Renewal dates and subscription costs use saved application records. Urgent is 0–14 days, due soon is 0–30 days, upcoming is more than 30 days, and overdue dates are before today.</PrototypeNote>
       <ActionError message={actionError} />
       <div className="mb-3 flex flex-wrap gap-2">
         <input aria-label="Search renewals" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search applications" className={`${controlClass} min-w-48 flex-1 sm:max-w-xs`} />
         <select aria-label="Filter renewals" value={filter} onChange={(event) => setFilter(event.target.value)} className={controlClass}>
-          <option value="all">All renewals</option><option value="review">Needs review</option><option value="High">Urgent</option><option value="Medium">Due soon</option><option value="Low">Upcoming</option>
+          <option value="all">All renewals</option><option value="upcoming">Upcoming (over 30 days)</option><option value="due-soon">Due soon (within 30 days)</option><option value="overdue">Overdue</option><option value="review">Needs review</option><option value="High">Urgent (within 14 days)</option><option value="Medium">Due soon (15–30 days)</option>
         </select>
       </div>
       <Card className="overflow-x-auto p-0">
@@ -317,7 +324,7 @@ export function RenewalsPage() {
           <thead className="bg-stone-50 dark:bg-stone-800/50"><tr>
             {tableHeader("Application", "name", sort, direction, onSort)}
             {tableHeader("Renewal date", "date", sort, direction, onSort)}
-            {tableHeader("Days remaining", "days_remaining", sort, direction, onSort)}
+            {tableHeader("Days remaining", "urgency", sort, direction, onSort)}
             {tableHeader("Annual cost", "cost", sort, direction, onSort)}
             <th className="px-4 py-2.5 text-left text-xs font-medium text-stone-500">Urgency</th>
             <th className="px-4 py-2.5 text-left text-xs font-medium text-stone-500">Review</th>
@@ -325,10 +332,10 @@ export function RenewalsPage() {
           </tr></thead>
           <tbody>{rows.map((item) => <tr key={item.name} className="border-t border-stone-100 dark:border-stone-800">
             <td className="px-4 py-3"><span className="font-medium">{item.name}</span><span className="ml-2 text-xs text-stone-500">{item.category}</span></td>
-            <td className="px-4">{new Date(`${item.renewal_date}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</td>
-            <td className="px-4 font-medium">{item.days_remaining === 0 ? "Today" : `${item.days_remaining} days`}</td>
+            <td className="px-4">{item.renewal_date ? formatDate(item.renewal_date) : "Date unavailable"}</td>
+            <td className="px-4 font-medium">{item.days_remaining === null ? "Unavailable" : item.days_remaining < 0 ? `${Math.abs(item.days_remaining)} days overdue` : item.days_remaining === 0 ? "Today" : `In ${item.days_remaining} days`}</td>
             <td className="px-4">{inr(item.annual_cost)}<span className="ml-1 text-xs text-stone-500">({inr(item.monthly_cost)}/mo)</span></td>
-            <td className="px-4"><Badge tone={item.urgency === "High" ? "red" : item.urgency === "Medium" ? "yellow" : "green"}>{item.urgency}</Badge></td>
+            <td className="px-4"><Badge tone={item.urgency === "Overdue" || item.urgency === "High" ? "red" : item.urgency === "Medium" ? "yellow" : "green"}>{item.renewal_status}</Badge></td>
             <td className="px-4">{item.status}</td>
             <td className="px-4 py-2"><button disabled={item.status === "Reviewed" || working === item.name} onClick={() => markReviewed(item.name)} className="whitespace-nowrap rounded-lg border border-stone-200 px-2.5 py-1.5 text-xs hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-stone-700 dark:hover:bg-stone-800">{working === item.name ? "Saving…" : item.status === "Reviewed" ? "Reviewed" : "Mark reviewed"}</button></td>
           </tr>)}</tbody>
