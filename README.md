@@ -25,6 +25,8 @@ The frontend signs users in through Supabase Auth and sends the current access t
 
 After authentication, users can select only organizations returned by the backend for their verified identity. Business-data routes require an organization selector and a matching server-side membership; writes also require the role appropriate to the operation. Creating an organization makes the authenticated caller its owner. Changing a client-side organization ID or role does not grant access.
 
+The `backend/.env.example` and `frontend/.env.example` files are templates and require local configuration. The legacy owner UUID must be explicitly approved before setting it locally; do not infer it from the authentication allowlist. The frontend example's loopback API URL is for development only.
+
 ## Stage 2.1 tenant migration
 
 The backend no longer creates or seeds the SQLite database during import or startup. Tenant API routes require a verified Supabase session, membership in the selected organization, and the role required by the operation. Set `SAASSPEND_DATABASE_PATH` only when intentionally targeting a migrated database.
