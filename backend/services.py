@@ -2,6 +2,8 @@
 from datetime import date, datetime
 from urllib.parse import quote
 
+from tenant_migration import normalize_application_name
+
 LOW_UTILIZATION_THRESHOLD = 75
 DUE_SOON_DAYS = 30
 URGENT_RENEWAL_DAYS = 14
@@ -197,7 +199,11 @@ def renewals(apps: list[dict], reviewed: set[str], today: date | None = None) ->
             "days_remaining": days_remaining, "monthly_cost": app["cost"], "annual_cost": app["annual"],
             "risk": app["risk"], "urgency": urgency,
             "renewal_status": renewal_status,
-            "status": "Reviewed" if app["name"].lower() in reviewed else "Needs review",
+            "status": (
+                "Reviewed"
+                if normalize_application_name(app["name"]) in reviewed
+                else "Needs review"
+            ),
         })
     items.sort(key=lambda item: (
         item["days_remaining"] is None,
