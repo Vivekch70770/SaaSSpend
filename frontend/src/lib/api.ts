@@ -1,12 +1,57 @@
 
 import { useEffect, useState } from "react";
+import { supabase } from "./supabase";
+import { resolveApiBase } from "./apiBase";
 
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
+const API_BASE = resolveApiBase(
+  import.meta.env.VITE_API_URL ??
+    (import.meta.env.PROD ? undefined : "http://127.0.0.1:8000"),
+  import.meta.env.PROD,
+);
+const ORGANIZATION_STORAGE_KEY = "saasspend.selectedOrganizationId";
+
+export function getSelectedOrganizationId(): string | null {
+  return window.localStorage.getItem(ORGANIZATION_STORAGE_KEY);
+}
+
+export function storeSelectedOrganizationId(organizationId: string | null): void {
+  if (organizationId) {
+    window.localStorage.setItem(ORGANIZATION_STORAGE_KEY, organizationId);
+  } else {
+    window.localStorage.removeItem(ORGANIZATION_STORAGE_KEY);
+  }
+}
+
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly authorizationPresent: boolean,
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
 
 export async function requestApi<T>(path: string, init?: RequestInit): Promise<T> {
+  const { data, error } = supabase
+    ? await supabase.auth.getSession()
+    : { data: { session: null }, error: new Error("Supabase Auth is not configured.") };
+  if (error) throw error;
+
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const accessToken = data.session?.access_token;
+  if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
+
+  if (path !== "/organizations" && path !== "/auth/me") {
+    const organizationId = getSelectedOrganizationId();
+    if (organizationId) headers.set("X-Organization-ID", organizationId);
+  }
+
   const response = await fetch(`${API_BASE}/api${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers,
   });
   if (!response.ok) {
     let message = `API error: ${response.status}`;
@@ -22,7 +67,11 @@ export async function requestApi<T>(path: string, init?: RequestInit): Promise<T
     } catch {
       // Keep the HTTP status message when the server response is not JSON.
     }
-    throw new Error(message);
+    throw new ApiRequestError(
+      message,
+      response.status,
+      headers.has("Authorization"),
+    );
   }
   if (response.status === 204 || response.status === 205) {
     return undefined as T;
@@ -31,6 +80,7 @@ export async function requestApi<T>(path: string, init?: RequestInit): Promise<T
 }
 
 export type App = {
+  id: string;
   name: string;
   category: string;
   cost: number;
